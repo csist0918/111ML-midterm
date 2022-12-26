@@ -18,6 +18,11 @@ import tensorflow as tf
 from sklearn.metrics import roc_curve
 #-------------------------------------------
 
+from sklearn.metrics import auc
+from matplotlib.pyplot import MultipleLocator
+from sklearn.metrics import roc_auc_score, roc_curve
+
+
 def recall_m(y_true, y_pred):
     true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
     possible_positives = K.sum(K.round(K.clip(y_true, 0, 1)))
@@ -46,61 +51,110 @@ y_train = np.memmap(path+"\\y_train.dat", dtype=np.float32, mode="r", shape=trai
 x_test = np.memmap(path+"\X_test.dat", dtype=np.float32, mode="r", shape=(test_size, columns))
 y_test = np.memmap(path+"\y_test.dat", dtype=np.float32, mode="r", shape=test_size)
 
- 
+
+
+
 scaler = preprocessing.StandardScaler().fit(x_train)
 scaler2 = preprocessing.StandardScaler().fit(x_test)
 x_scaled = scaler.transform(x_train)
 x_test_scaled = scaler2.transform(x_test)
 
 
-kf = KFold(7,shuffle=True) 
-fold = 0
+x_validation = x_scaled[480000:]
+y_validation = y_train[480000:]
 
-loss_group = []
-accuracy_group = []
-f1_score_group = []
-precision_group = []
-recall_group = []
-
-for train, test in kf.split(x_scaled):
-    fold += 1
-    
-    print(f"Fold #{fold}")
-    kx_train, kx_val = x_scaled[train], x_scaled[test]
-    ky_train, ky_val = y_train[train], y_train[test]
-    
-    network = Sequential()
-    network.add(layers.Dropout(0.2))
-    network.add(layers.Dense(1500,activation='relu'))
-    network.add(layers.Dropout(0.5))
-    network.add(layers.Dense(1, activation='sigmoid'))
-    opt = keras.optimizers.Adam(learning_rate=0.001)
-    network.compile(optimizer=opt,
+  
+network = Sequential()
+network.add(layers.Dropout(0.2))
+network.add(layers.Dense(1500,activation='relu'))
+network.add(layers.Dropout(0.5))
+network.add(layers.Dense(1, activation='sigmoid'))
+opt = keras.optimizers.Adam(learning_rate=0.001)
+network.compile(optimizer=opt,
                     loss='binary_crossentropy',
                     metrics=['accuracy',f1_m,precision_m, recall_m]) 
-    history = network.fit(kx_train,
-                    ky_train,
+history = network.fit(x_scaled,
+                    y_train,
                     epochs=10,
                     batch_size=256,
-                    validation_data=(kx_val,ky_val))
+                    validation_data=(x_validation,y_validation))
 
-    loss, accuracy, f1_score, precision, recall = network.evaluate(x_test_scaled,y_test)
-    result ='[K]:%d [Loss]:%.3f [Accuracy]:%.3f [F1]:%.3f [Precision]:%.3f [Recall]:%.3f' %(fold,loss, accuracy, f1_score, precision, recall) 
-    print(result)
-    loss_group.append(loss)
-    accuracy_group.append(accuracy)
-    f1_score_group.append(f1_score)
-    precision_group.append(precision)
-    recall_group.append(recall)
-    # K折交叉驗證訓練時下一折前需要釋放記憶體避免記憶體被耗盡
-    K.clear_session() 
-    gc.collect()
-    
-loss_avg = np.average(loss_group)
-accuracy_avg = np.average(accuracy_group)
-f1_score_avg = np.average(f1_score_group)
-precision_avg = np.average(precision_group)
-recall_avg = np.average(recall_group)
 
-msg2= 'Average: [Loss]:%.3f [Accuracy]:%.3f [F1]:%.3f [Precision]:%.3f [Recall]:%.3f' %(loss_avg, accuracy_avg, f1_score_avg, precision_avg, recall_avg) 
-print(msg2)
+loss, accuracy, f1_score, precision, recall = network.evaluate(x_test_scaled,y_test)
+print('Loss:',loss)
+print('Accuracy:',accuracy)
+print('F1:',f1_score)
+print('Precision:',precision)
+print('Recall:',recall)
+
+
+gc.collect()
+
+# ravel() 轉換成一維陣列
+y_pred_keras = network.predict(x_test_scaled).ravel()
+fpr_keras, tpr_keras, thresholds_keras = roc_curve(y_test, y_pred_keras)
+auc_keras = auc (fpr_keras,tpr_keras)
+print('AUC:',auc_keras)
+print("ROC AUC:", roc_auc_score(y_test, y_pred_keras))
+
+
+
+
+def get_fpr(y_true, y_pred):
+    nbenign = (y_true == 0).sum()
+    nfalse = (y_pred[y_true == 0] == 1).sum()
+    return nfalse / float(nbenign)
+
+
+def find_threshold(y_true, y_pred, fpr_target):
+    thresh = 0.0
+    fpr = get_fpr(y_true, y_pred > thresh)
+    while fpr > fpr_target and thresh < 1.0:
+        thresh += 0.0001
+        fpr = get_fpr(y_true, y_pred > thresh)
+    return thresh, fpr
+
+
+
+
+threshold, fpr = find_threshold(y_test, y_pred_keras, 0.1)
+fnr = (y_pred_keras[y_test == 1] < threshold).sum() / float((y_test == 1).sum())
+print("Ember Model Performance at 10% FPR:")
+print("Threshold: {:.3f}".format(threshold))
+print("False Positive Rate: {:.3f}%".format(fpr * 100))
+print("False Negative Rate: {:.3f}%".format(fnr * 100))
+print("Detection Rate: {}%".format(100 - fnr * 100))
+print()
+
+
+threshold, fpr = find_threshold(y_test, y_pred_keras, 0.01)
+fnr = (y_pred_keras[y_test == 1] < threshold).sum() / float((y_test == 1).sum())
+print("Ember Model Performance at 1% FPR:")
+print("Threshold: {:.3f}".format(threshold))
+print("False Positive Rate: {:.3f}%".format(fpr * 100))
+print("False Negative Rate: {:.3f}%".format(fnr * 100))
+print("Detection Rate: {}%".format(100 - fnr * 100))
+print()
+
+threshold, fpr = find_threshold(y_test, y_pred_keras, 0.001)
+fnr = (y_pred_keras[y_test == 1] < threshold).sum() / float((y_test == 1).sum())
+print("Ember Model Performance at 0.1% FPR:")
+print("Threshold: {:.3f}".format(threshold))
+print("False Positive Rate: {:.3f}%".format(fpr * 100))
+print("False Negative Rate: {:.3f}%".format(fnr * 100))
+print("Detection Rate: {}%".format(100 - fnr * 100))
+
+plt.figure(figsize=(8, 8))
+fpr_plot, tpr_plot, _ = roc_curve(y_test,y_pred_keras)
+plt.plot(fpr_plot, tpr_plot, lw=4, color='k')
+plt.gca().set_xscale("log")
+plt.yticks(np.arange(22) / 20.0)
+plt.xlim([4e-5, 1.0])
+plt.ylim([0.65, 1.01])
+plt.gca().grid(True)
+plt.vlines(fpr, 0, 1 - fnr, color="r", lw=2)
+plt.hlines(1 - fnr, 0, fpr, color="r", lw=2)
+plt.xlabel("False positive rate")
+plt.ylabel("True positive rate")
+_ = plt.title("myself Model ROC Curve")
+plt.show()
